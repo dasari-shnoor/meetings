@@ -12,13 +12,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, client_id: str)
     WebSocket endpoint for handling WebRTC signaling and real-time chat for a specific room.
     """
     await manager.connect(websocket, room_id, client_id)
-    
-    # Notify other users in the room that a new user joined
-    await manager.broadcast_to_room(room_id, {
-        "type": "user-joined",
-        "client_id": client_id,
-        "message": f"User {client_id} joined the meeting"
-    }, sender=websocket)
 
     try:
         while True:
@@ -29,23 +22,46 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, client_id: str)
             msg_type = data.get("type")
             target_id = data.get("target")
 
-            # Basic structured message forwarding:
-            # If target is specified, in a more complex setup you might send it ONLY to the target.
-            # Here we broadcast to the room, letting the client-side ignore irrelevant messages.
-            # However, for WebRTC it's best if we map target_id to specific websockets.
-            # To keep it simple, we will broadcast everyone and include the 'sender' and 'target'.
-            
+            if msg_type == "join-room":
+                if data.get("role") == "host":
+                    await manager.send_to_websocket(websocket, {
+                        "type": "waiting-room-sync",
+                        "requests": manager.get_waiting_requests(room_id)
+                    })
+
+                join_message = {
+                    "type": "user-joined",
+                    "sender": client_id,
+                    "client_id": client_id,
+                    "name": data.get("name"),
+                    "role": data.get("role", "participant"),
+                    "message": f"User {client_id} joined the meeting"
+                }
+                await manager.broadcast_to_room(room_id, join_message, sender=websocket)
+                continue
+
+            if msg_type == "host-ready":
+                await manager.send_to_websocket(websocket, {
+                    "type": "waiting-room-sync",
+                    "requests": manager.get_waiting_requests(room_id)
+                })
+                continue
+
+            if msg_type == "join-request":
+                manager.add_waiting_request(room_id, client_id, data.get("name", "Participant"))
+
+            if msg_type in {"admit", "deny"} and target_id:
+                manager.remove_waiting_request(room_id, target_id)
+
             message_to_send = {
                 "type": msg_type,
                 "sender": client_id,
                 **data
             }
-            
+
             if target_id:
-                # Optionally implement direct routing through manager.user_records
                 pass
 
-            # Broadcast the WebRTC signaling / Chat to others in the room
             await manager.broadcast_to_room(room_id, message_to_send, sender=websocket)
 
             # --- AI Chatbot Interception ---
@@ -70,6 +86,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, client_id: str)
         # Notify others that this user left
         await manager.broadcast_to_room(room_id, {
             "type": "user-left",
+            "sender": client_id,
             "client_id": client_id,
             "message": f"User {client_id} left the meeting"
         })

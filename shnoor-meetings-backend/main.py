@@ -1,4 +1,5 @@
 import logging
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -23,13 +24,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS configuration to allow connections from any frontend during development
+frontend_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+
+# CORS configuration for the local frontend during development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins (change in production!)
+    allow_origins=frontend_origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routers

@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useWebRTC } from '../hooks/useWebRTC';
 import VideoGrid from '../components/VideoGrid';
 import MeetingControls from '../components/MeetingControls';
-import { Send, Users, Info, Video } from 'lucide-react';
+import { Send, Users, Info, Video, Check, X } from 'lucide-react';
+import { transcribeAudioChunk } from '../services/groqService';
 
 export default function MeetingRoom() {
   const { id: roomId } = useParams();
+  const navigate = useNavigate();
   const {
     localStream,
     remoteStreams,
@@ -19,19 +21,32 @@ export default function MeetingRoom() {
     toggleScreenShare,
     toggleRaiseHand,
     sendChatMessage,
+    sendCaptionMessage,
     admitParticipant,
+    denyParticipant,
     activeJoinRequests,
     isHost,
-    mediaError
+    mediaError,
+    displayName,
+    isAudioEnabled,
+    isVideoEnabled,
   } = useWebRTC(roomId);
 
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isPeopleOpen, setIsPeopleOpen] = useState(false);
   const [isCaptionsOn, setIsCaptionsOn] = useState(false);
-  const [currentCaptionText, setCurrentCaptionText] = useState('');
-  const recognitionRef = useRef(null);
+  const [activeCaptions, setActiveCaptions] = useState({});
+  const mediaRecorderRef = useRef(null);
+  const transcriptionIntervalRef = useRef(null);
   const [chatInput, setChatInput] = useState('');
   const messagesEndRef = useRef(null);
+  const isAdmitted = sessionStorage.getItem(`meeting_admitted_${roomId}`) === 'true';
+
+  useEffect(() => {
+    if (!isHost && !isAdmitted) {
+      navigate(`/room/${roomId}`, { replace: true });
+    }
+  }, [isAdmitted, isHost, navigate, roomId]);
 
   const handleSendMessage = (e) => {
     e.preventDefault();
@@ -46,52 +61,112 @@ export default function MeetingRoom() {
   }, [messages, isChatOpen]);
 
   useEffect(() => {
-    if (isCaptionsOn) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.continuous = true;
-        recognitionRef.current.interimResults = true;
-        
-        recognitionRef.current.onresult = (event) => {
-          let interimTranscript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              setCurrentCaptionText(event.results[i][0].transcript);
-              setTimeout(() => setCurrentCaptionText(''), 5000); 
-            } else {
-              interimTranscript += event.results[i][0].transcript;
-              setCurrentCaptionText(interimTranscript);
-            }
+    const handleNewCaption = (event) => {
+      const { sender, senderName, text } = event.detail;
+      if (!text) {
+        return;
+      }
+
+      const captionId = sender || 'remote';
+      setActiveCaptions((prev) => ({
+        ...prev,
+        [captionId]: {
+          name: senderName || participantsMetadata[sender]?.name || 'Participant',
+          text,
+          expiresAt: Date.now() + 6000,
+        },
+      }));
+    };
+
+    window.addEventListener('new-caption', handleNewCaption);
+    return () => window.removeEventListener('new-caption', handleNewCaption);
+  }, [participantsMetadata]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setActiveCaptions((prev) => {
+        const next = { ...prev };
+        let changed = false;
+
+        Object.keys(next).forEach((id) => {
+          if (next[id].expiresAt <= now) {
+            delete next[id];
+            changed = true;
           }
-        };
+        });
 
-        recognitionRef.current.onerror = (event) => {
-          console.error("Speech recognition error", event.error);
-        };
+        return changed ? next : prev;
+      });
+    }, 1000);
 
-        try {
-          recognitionRef.current.start();
-        } catch (e) {
-          console.error("Could not start recognition", e);
-        }
-      } else {
-        alert("Your browser does not support live captions.");
-        setIsCaptionsOn(false);
-      }
-    } else {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-        setCurrentCaptionText('');
-      }
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (!isCaptionsOn || !localStream) {
+      return undefined;
     }
 
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (!audioTrack) {
+      return undefined;
+    }
+
+    const audioStream = new MediaStream([audioTrack]);
+
+    const startChunkRecording = () => {
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
+      const recorder = new MediaRecorder(audioStream, mimeType);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = async (event) => {
+        if (!event.data || event.data.size === 0 || !isCaptionsOn) {
+          return;
+        }
+
+        try {
+          const transcript = await transcribeAudioChunk(event.data, 'auto');
+          if (!transcript) {
+            return;
+          }
+
+          setActiveCaptions((prev) => ({
+            ...prev,
+            me: {
+              name: 'You',
+              text: transcript,
+              expiresAt: Date.now() + 6000,
+            },
+          }));
+
+          sendCaptionMessage(transcript);
+        } catch (error) {
+          console.error('Caption transcription failed', error);
+        }
+      };
+
+      recorder.start();
+      setTimeout(() => {
+        if (recorder.state === 'recording') {
+          recorder.stop();
+        }
+      }, 8000);
+    };
+
+    startChunkRecording();
+    transcriptionIntervalRef.current = setInterval(startChunkRecording, 8050);
+
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+
+      if (transcriptionIntervalRef.current) {
+        clearInterval(transcriptionIntervalRef.current);
       }
     };
-  }, [isCaptionsOn]);
+  }, [isCaptionsOn, localStream, sendCaptionMessage]);
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomId);
@@ -151,14 +226,19 @@ export default function MeetingRoom() {
                 remoteStreams={remoteStreams} 
                 participantsMetadata={participantsMetadata}
                 localHandRaised={isHandRaised}
+                localParticipantName={displayName || 'You'}
+                isSharingScreen={isSharingScreen}
               />
             )}
             
-            {isCaptionsOn && currentCaptionText && (
-              <div className="absolute bottom-28 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur-md px-6 py-3 rounded-xl max-w-3xl text-center shadow-2xl z-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                <p className="text-white text-lg font-medium tracking-wide">
-                  {currentCaptionText}
-                </p>
+            {isCaptionsOn && Object.keys(activeCaptions).length > 0 && (
+              <div className="absolute bottom-28 left-1/2 -translate-x-1/2 flex flex-col gap-3 w-full max-w-3xl px-4 z-10">
+                {Object.entries(activeCaptions).map(([id, caption]) => (
+                  <div key={id} className="bg-black/80 backdrop-blur-md px-5 py-3 rounded-xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-300">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-blue-300 mb-1">{caption.name}</div>
+                    <p className="text-white text-base font-medium">{caption.text}</p>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -174,6 +254,8 @@ export default function MeetingRoom() {
             isSharingScreen={isSharingScreen}
             isHandRaised={isHandRaised}
             isCaptionsOn={isCaptionsOn}
+            isAudioOn={isAudioEnabled}
+            isVideoOn={isVideoEnabled}
             toggleChatVisibility={() => {
               setIsChatOpen(!isChatOpen);
               if (!isChatOpen) setIsPeopleOpen(false);
@@ -260,12 +342,22 @@ export default function MeetingRoom() {
                             </div>
                             <span className="text-sm font-medium text-white truncate">{req.name}</span>
                           </div>
-                          <button 
-                            onClick={() => admitParticipant(req.id)}
-                            className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-xs font-semibold hover:bg-blue-500 transition-colors"
-                          >
-                            Admit
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={() => admitParticipant(req.id)}
+                              className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-xs font-semibold hover:bg-blue-500 transition-colors inline-flex items-center gap-1"
+                            >
+                              <Check size={14} />
+                              Admit
+                            </button>
+                            <button
+                              onClick={() => denyParticipant(req.id)}
+                              className="bg-gray-600 text-white px-3 py-1.5 rounded-md text-xs font-semibold hover:bg-gray-500 transition-colors inline-flex items-center gap-1"
+                            >
+                              <X size={14} />
+                              Deny
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -286,9 +378,14 @@ export default function MeetingRoom() {
                   {Object.keys(remoteStreams).map(peerId => (
                     <div key={peerId} className="flex items-center gap-3 py-2">
                       <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-white text-xs font-bold">
-                        U
+                        {(participantsMetadata[peerId]?.name || 'Participant').charAt(0)}
                       </div>
-                      <span className="text-sm font-medium text-white">Participant</span>
+                      <span className="text-sm font-medium text-white">
+                        {participantsMetadata[peerId]?.name || 'Participant'}
+                        {participantsMetadata[peerId]?.role === 'host' ? ' (Host)' : ''}
+                        {participantsMetadata[peerId]?.status === 'away' ? ' • Away' : ''}
+                        {participantsMetadata[peerId]?.isSpeaking ? ' • Speaking' : ''}
+                      </span>
                     </div>
                   ))}
                 </div>

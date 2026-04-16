@@ -1,19 +1,33 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Mic, MicOff, Video, VideoOff, Settings, MoreVertical, Shield, User, Monitor, Sparkles, LogIn, ChevronRight, X, Check, Link, ChevronDown, Grid } from 'lucide-react';
 import MeetingHeader from '../components/MeetingHeader';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useWebRTC } from '../hooks/useWebRTC';
 import InviteModal from '../components/InviteModal';
+import { getPreJoinMediaState, getPreferredMediaConstraints, savePreJoinMediaState } from '../utils/meetingUtils';
 
 export default function LobbyPage() {
   const { id: roomId } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const videoRef = useRef(null);
+  const roleFromLink = new URLSearchParams(location.search).get('role');
+  const storedRole = sessionStorage.getItem(`meeting_role_${roomId}`);
+  const storedHostFlag = localStorage.getItem(`meeting_host_${roomId}`) === 'true';
+  const storedParticipantName = sessionStorage.getItem(`meeting_name_${roomId}`) || 'Guest';
+  const initialRole = roleFromLink === 'participant'
+    ? 'participant'
+    : storedRole === 'host' || storedHostFlag
+      ? 'host'
+      : storedRole === 'participant'
+        ? 'participant'
+        : undefined;
   
   const [stream, setStream] = useState(null);
-  const [isMicOn, setIsMicOn] = useState(true);
-  const [isVideoOn, setIsVideoOn] = useState(true);
+  const initialMediaState = getPreJoinMediaState(roomId);
+  const [isMicOn, setIsMicOn] = useState(initialMediaState.audioEnabled);
+  const [isVideoOn, setIsVideoOn] = useState(initialMediaState.videoEnabled);
   const [isHovered, setIsHovered] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   const [isWaiting, setIsWaiting] = useState(false);
@@ -26,9 +40,25 @@ export default function LobbyPage() {
     activeJoinRequests, 
     admitParticipant, 
     requestToJoin 
-  } = useWebRTC(roomId);
+  } = useWebRTC(roomId, { acquireMedia: false, autoJoin: false, initialRole });
 
   const toastTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const roleFromLink = params.get('role');
+
+    if (roleFromLink === 'participant') {
+      sessionStorage.setItem(`meeting_role_${roomId}`, 'participant');
+      sessionStorage.removeItem(`meeting_admitted_${roomId}`);
+    } else if (storedHostFlag) {
+      sessionStorage.setItem(`meeting_role_${roomId}`, 'host');
+    }
+  }, [location.search, roomId, storedHostFlag]);
+
+  useEffect(() => {
+    savePreJoinMediaState(roomId, { audioEnabled: isMicOn, videoEnabled: isVideoOn });
+  }, [isMicOn, isVideoOn, roomId]);
 
   const showToast = (message) => {
     setToastMessage(message);
@@ -44,9 +74,16 @@ export default function LobbyPage() {
     async function startPreview() {
       try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-          video: true, 
-          audio: true 
+          ...getPreferredMediaConstraints(),
         });
+        const audioTrack = mediaStream.getAudioTracks()[0];
+        const videoTrack = mediaStream.getVideoTracks()[0];
+        if (audioTrack) {
+          audioTrack.enabled = initialMediaState.audioEnabled;
+        }
+        if (videoTrack) {
+          videoTrack.enabled = initialMediaState.videoEnabled;
+        }
         setStream(mediaStream);
         if (videoRef.current) {
           videoRef.current.srcObject = mediaStream;
@@ -98,17 +135,28 @@ export default function LobbyPage() {
         joinMeeting();
       }
     };
+    const handleDenied = (e) => {
+      if (e.detail.roomId === roomId) {
+        setIsWaiting(false);
+        showToast('The host denied your join request.');
+      }
+    };
     window.addEventListener('meeting-admitted', handleAdmitted);
-    return () => window.removeEventListener('meeting-admitted', handleAdmitted);
+    window.addEventListener('meeting-denied', handleDenied);
+    return () => {
+      window.removeEventListener('meeting-admitted', handleAdmitted);
+      window.removeEventListener('meeting-denied', handleDenied);
+    };
   }, [roomId]);
 
   const handleAskToJoin = () => {
     setIsWaiting(true);
-    requestToJoin("Guest"); 
+    requestToJoin(storedParticipantName);
     showToast("Join request sent. Waiting for host...");
   };
 
   const joinMeeting = () => {
+    savePreJoinMediaState(roomId, { audioEnabled: isMicOn, videoEnabled: isVideoOn });
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
     }
@@ -339,4 +387,3 @@ function PermissionPill({ icon, label, onClick }) {
     </div>
   );
 }
-

@@ -6,7 +6,7 @@ export default function InviteModal({ isOpen, onClose, roomId }) {
 
   if (!isOpen) return null;
 
-  const inviteLink = `${window.location.origin}/room/${roomId}`;
+  const inviteLink = `${window.location.origin}/room/${roomId}?role=participant`;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(inviteLink);

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Mic, MicOff, Video, VideoOff, MessageSquare, PhoneOff, Monitor, Hand, Users, Type } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -12,21 +11,19 @@ export default function MeetingControls({
   isSharingScreen,
   isHandRaised,
   isCaptionsOn,
+  isVideoOn,
+  isAudioOn,
   toggleChatVisibility, 
   togglePeopleVisibility,
   hasUnreadMessages 
 }) {
-  const [isVideoOn, setIsVideoOn] = useState(true);
-  const [isAudioOn, setIsAudioOn] = useState(true);
   const navigate = useNavigate();
 
   const handleVideo = () => {
-    setIsVideoOn(!isVideoOn);
     onToggleVideo();
   };
 
   const handleAudio = () => {
-    setIsAudioOn(!isAudioOn);
     onToggleAudio();
   };
 

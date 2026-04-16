@@ -1,29 +1,40 @@
-import sqlite3
 import os
+from pathlib import Path
 
-DB_PATH = "shnoor_meetings.db"
+import psycopg2
+from dotenv import load_dotenv
+from psycopg2.extras import RealDictCursor
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+SCHEMA_PATH = BASE_DIR / "schema.sql"
+ENV_PATH = BASE_DIR / ".env"
+
+load_dotenv(ENV_PATH)
+
+
+def get_database_url():
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url
+
+    host = os.getenv("POSTGRES_HOST", "127.0.0.1")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    dbname = os.getenv("POSTGRES_DB", "shnoor_meetings")
+    user = os.getenv("POSTGRES_USER", "postgres")
+    password = os.getenv("POSTGRES_PASSWORD", "postgres")
+
+    return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+
 
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Create events table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS calendar_events (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            description TEXT,
-            start_time TEXT NOT NULL,
-            end_time TEXT NOT NULL,
-            room_id TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    if not SCHEMA_PATH.exists():
+        raise FileNotFoundError(f"Database schema file not found: {SCHEMA_PATH}")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(SCHEMA_PATH.read_text(encoding="utf-8"))

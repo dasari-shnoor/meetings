@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Video, Keyboard, Plus, Link, Calendar, ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import MeetingHeader from '../components/MeetingHeader';
 import MeetingSidebar from '../components/MeetingSidebar';
@@ -7,9 +7,11 @@ import InviteModal from '../components/InviteModal';
 import ChatbotPanel from '../components/ChatbotPanel';
 import { Bot } from 'lucide-react';
 import illustration from '../assets/illustration.png';
+import { buildApiUrl } from '../utils/api';
 
 export default function LandingPage() {
   const [meetingCode, setMeetingCode] = useState('');
+  const [participantName, setParticipantName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -18,6 +20,7 @@ export default function LandingPage() {
   const [laterRoomId, setLaterRoomId] = useState('');
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -30,21 +33,53 @@ export default function LandingPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('chatbot') === '1') {
+      setIsChatbotOpen(true);
+    }
+  }, [location.search]);
+
+  const extractRoomId = (value) => {
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      return '';
+    }
+
+    try {
+      const parsedUrl = new URL(trimmedValue);
+      const segments = parsedUrl.pathname.split('/').filter(Boolean);
+      const roomIndex = segments.findIndex((segment) => segment === 'room' || segment === 'meeting');
+
+      if (roomIndex >= 0 && segments[roomIndex + 1]) {
+        return segments[roomIndex + 1];
+      }
+    } catch (error) {
+      return trimmedValue;
+    }
+
+    return trimmedValue;
+  };
+
   const handleStartInstantMeeting = async () => {
     setIsLoading(true);
     setShowDropdown(false);
     try {
-      const response = await fetch('http://localhost:8000/api/meetings/create', {
+      const response = await fetch(buildApiUrl('/api/meetings/create'), {
         method: 'POST',
       });
       const data = await response.json();
       if (data.room_id) {
         localStorage.setItem(`meeting_host_${data.room_id}`, 'true');
+        sessionStorage.setItem(`meeting_role_${data.room_id}`, 'host');
         navigate(`/room/${data.room_id}`);
       }
     } catch (err) {
       console.error('Failed to create instant meeting:', err);
-      navigate(`/room/${Math.random().toString(36).substring(7)}`);
+      const fallbackRoomId = Math.random().toString(36).substring(7);
+      localStorage.setItem(`meeting_host_${fallbackRoomId}`, 'true');
+      sessionStorage.setItem(`meeting_role_${fallbackRoomId}`, 'host');
+      navigate(`/room/${fallbackRoomId}`);
     } finally {
       setIsLoading(false);
     }
@@ -54,17 +89,21 @@ export default function LandingPage() {
     setIsLoading(true);
     setShowDropdown(false);
     try {
-      const response = await fetch('http://localhost:8000/api/meetings/create', {
+      const response = await fetch(buildApiUrl('/api/meetings/create'), {
         method: 'POST',
       });
       const data = await response.json();
       if (data.room_id) {
         localStorage.setItem(`meeting_host_${data.room_id}`, 'true');
+        sessionStorage.setItem(`meeting_role_${data.room_id}`, 'host');
         navigate(`/room/${data.room_id}`);
       }
     } catch (err) {
       console.error('Failed to create meeting for later:', err);
-      setLaterRoomId(Math.random().toString(36).substring(7));
+      const fallbackRoomId = Math.random().toString(36).substring(7);
+      localStorage.setItem(`meeting_host_${fallbackRoomId}`, 'true');
+      sessionStorage.setItem(`meeting_role_${fallbackRoomId}`, 'host');
+      setLaterRoomId(fallbackRoomId);
       setShowInviteModal(true);
     } finally {
       setIsLoading(false);
@@ -78,14 +117,19 @@ export default function LandingPage() {
 
   const handleJoinMeeting = (e) => {
     e.preventDefault();
-    if (meetingCode.trim()) {
-      navigate(`/room/${meetingCode.trim()}`);
+    const roomId = extractRoomId(meetingCode);
+    const displayName = participantName.trim() || 'Guest';
+
+    if (roomId) {
+      sessionStorage.setItem(`meeting_role_${roomId}`, 'participant');
+      sessionStorage.setItem(`meeting_name_${roomId}`, displayName);
+      navigate(`/room/${roomId}?role=participant`);
     }
   };
 
   return (
     <div className="flex flex-col h-screen bg-white">
-      <MeetingHeader />
+      <MeetingHeader onOpenChatbot={() => setIsChatbotOpen(true)} />
       
       <div className="flex flex-1 overflow-hidden">
         <MeetingSidebar />
@@ -204,11 +248,18 @@ export default function LandingPage() {
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md transform scale-100 transition-transform">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-medium text-gray-800">Join a meeting</h2>
-              <button onClick={() => {setShowJoinModal(false); setMeetingCode('');}} className="text-gray-400 hover:bg-gray-100 rounded-full p-2 transition-colors">
+              <button onClick={() => {setShowJoinModal(false); setMeetingCode(''); setParticipantName('');}} className="text-gray-400 hover:bg-gray-100 rounded-full p-2 transition-colors">
                 <X size={20} />
               </button>
             </div>
             <form onSubmit={handleJoinMeeting} className="flex flex-col gap-4">
+              <input
+                type="text"
+                placeholder="Your name"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all text-gray-700"
+                value={participantName}
+                onChange={(e) => setParticipantName(e.target.value)}
+              />
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Link size={18} className="text-gray-400" />
@@ -225,15 +276,15 @@ export default function LandingPage() {
               <div className="flex justify-end gap-3 mt-4">
                 <button
                   type="button"
-                  onClick={() => {setShowJoinModal(false); setMeetingCode('');}}
+                  onClick={() => {setShowJoinModal(false); setMeetingCode(''); setParticipantName('');}}
                   className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors font-medium"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={!meetingCode.trim()}
-                  className={`px-5 py-2 rounded-lg font-medium transition-all ${meetingCode.trim() ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md transform active:scale-95' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                  disabled={!meetingCode.trim() || !participantName.trim()}
+                  className={`px-5 py-2 rounded-lg font-medium transition-all ${meetingCode.trim() && participantName.trim() ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md transform active:scale-95' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
                 >
                   Join
                 </button>
